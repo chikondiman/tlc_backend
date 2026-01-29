@@ -33,6 +33,9 @@ app.add_middleware(
         "https://chikondiman.com",
         "http://discipline.chikondiman.com",
         "https://discipline.chikondiman.com",
+        "http://api.chikondiman.com",
+        "https://api.chikondiman.com",
+        "https://tlc-frontend-959402527512.us-central1.run.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -43,6 +46,14 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+# Google domain verification
+from fastapi.responses import PlainTextResponse
+
+@app.get("/googlec8a91cf65f9b8dd7.html", response_class=PlainTextResponse)
+def google_verification():
+    return "google-site-verification: googlec8a91cf65f9b8dd7.html"
 
 class AnalyticsEventIn(BaseModel):
     event: str
@@ -315,6 +326,16 @@ def update_order_status(
 # DB helpers
 # ----------------------------
 def get_db():
+    # Cloud Run uses Unix socket via Cloud SQL connector
+    instance_connection = os.getenv("INSTANCE_CONNECTION_NAME")
+    if instance_connection:
+        return mysql.connector.connect(
+            unix_socket=f"/cloudsql/{instance_connection}",
+            user=os.getenv("MYSQL_USER"),
+            password=os.getenv("MYSQL_PASSWORD"),
+            database=os.getenv("MYSQL_DATABASE"),
+        )
+    # Local/direct connection via host/port
     return mysql.connector.connect(
         host=os.getenv("MYSQL_HOST"),
         user=os.getenv("MYSQL_USER"),

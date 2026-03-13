@@ -14,11 +14,11 @@
 set -euo pipefail
 
 # ── Edit these ──────────────────────────────────────────────────────────
-PROJECT_ID="your-gcp-project-id"
+PROJECT_ID="savvy-437819"
 REGION="us-central1"
 REPO_OWNER="chikondiman"
 REPO_NAME="tlc_backend"
-CLOUD_SQL_INSTANCE="$PROJECT_ID:$REGION:your-cloud-sql-instance"
+CLOUD_SQL_INSTANCE="$PROJECT_ID:$REGION:savvy-db"
 # ────────────────────────────────────────────────────────────────────────
 
 echo "▶ Setting project..."

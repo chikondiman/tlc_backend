@@ -4,14 +4,14 @@ steps:
     args:
       - build
       - -t
-      - gcr.io/$PROJECT_ID/tlc-backend:$COMMIT_SHA
+      - ${_AR_IMAGE}:$COMMIT_SHA
       - -t
-      - gcr.io/$PROJECT_ID/tlc-backend:latest
+      - ${_AR_IMAGE}:latest
       - .
 
   # Push both tags
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', '--all-tags', 'gcr.io/$PROJECT_ID/tlc-backend']
+    args: ['push', '--all-tags', '${_AR_IMAGE}']
 
   # Deploy to Cloud Run (pinned to the exact commit image)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -20,23 +20,26 @@ steps:
       - run
       - deploy
       - tlc-backend
-      - --image=gcr.io/$PROJECT_ID/tlc-backend:$COMMIT_SHA
+      - --image=${_AR_IMAGE}:$COMMIT_SHA
       - --region=${_REGION}
       - --platform=managed
       - --allow-unauthenticated
       - --min-instances=0
       - --max-instances=3
-      - --memory=256Mi
+      - --memory=512Mi
       - --cpu=1
       - --concurrency=80
       - --timeout=60s
 
 images:
-  - gcr.io/$PROJECT_ID/tlc-backend:$COMMIT_SHA
-  - gcr.io/$PROJECT_ID/tlc-backend:latest
+  - ${_AR_IMAGE}:$COMMIT_SHA
+  - ${_AR_IMAGE}:latest
 
 substitutions:
   _REGION: us-central1
+  # Set this in the Cloud Build trigger substitutions to match your Artifact Registry path:
+  # europe-west1-docker.pkg.dev/savvy-437819/cloud-run-source-deploy/tlc_backend/tlc-backend
+  _AR_IMAGE: europe-west1-docker.pkg.dev/savvy-437819/cloud-run-source-deploy/tlc_backend/tlc-backend
 
 options:
   logging: CLOUD_LOGGING_ONLY

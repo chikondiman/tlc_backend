@@ -22,7 +22,8 @@ print("ADMIN_TOKEN loaded?", bool(ADMIN_TOKEN))
 # Stripe config
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 if not stripe.api_key:
-    raise RuntimeError("Missing STRIPE_SECRET_KEY. Check your .env and that load_dotenv() runs.")
+    print("❌ FATAL: Missing STRIPE_SECRET_KEY env var")
+    raise RuntimeError("Missing STRIPE_SECRET_KEY")
 
 # ---------------------------------------------------------------------------
 # Rate limiter (zero-dependency, in-memory)

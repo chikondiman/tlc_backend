@@ -12,4 +12,3 @@ sendgrid==6.12.5
 
 # Security: rate limiting
 slowapi==0.1.9
-limits==3.7.0

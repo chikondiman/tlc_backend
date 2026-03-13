@@ -30,7 +30,6 @@ steps:
       - --cpu=1
       - --concurrency=80
       - --timeout=60s
-      - --set-cloudsql-instances=${_CLOUD_SQL_INSTANCE}
 
 images:
   - gcr.io/$PROJECT_ID/tlc-backend:$COMMIT_SHA
@@ -38,7 +37,6 @@ images:
 
 substitutions:
   _REGION: us-central1
-  _CLOUD_SQL_INSTANCE: ''   # set in trigger: project:region:instance
 
 options:
   logging: CLOUD_LOGGING_ONLY

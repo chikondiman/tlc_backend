@@ -238,6 +238,12 @@ class UpdateOrderStatusBody(BaseModel):
     note: str | None = None
 
 
+class InventoryItem(BaseModel):
+    productId: str
+    size: Optional[str] = None
+    quantity: int
+
+
 def render_status_email(display_order: str, status: str, tracking: str | None, carrier: str | None):
     tracking_html = ""
     if tracking:
@@ -356,6 +362,8 @@ def create_order_record(customer: Customer, items: List[CartItem], client_total:
             status_code=400,
             detail=f"Total mismatch client={client_total} server={server_total}",
         )
+
+    check_inventory(items)
 
     order_id = str(uuid.uuid4())
 
@@ -580,7 +588,10 @@ async def stripe_webhook(request: Request):
             # 1) Mark paid
             mark_order_paid(order_id, payment_intent_id)
 
-            # 2) Send confirmation email once (with summary)
+            # 2) Decrement inventory
+            decrement_inventory_for_order(order_id)
+
+            # 3) Send confirmation email once (with summary)
             customer_email, already_sent = get_order_email_and_flags(order_id)
             print("✅ customer_email:", customer_email, "already_sent:", already_sent)
 
@@ -649,5 +660,136 @@ def mark_order_failed(order_id: str):
     except mysql.connector.Error as e:
         db.rollback()
         print("⚠️ mark_order_failed failed:", e)
+    finally:
+        db.close()
+
+
+# ----------------------------
+# Inventory helpers
+# ----------------------------
+
+def check_inventory(items: List[CartItem]):
+    """Raise 400 if any item in the cart is not sufficiently stocked."""
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        for item in items:
+            if item.isDealHeader:
+                continue
+            size = item.size or ""
+            cur.execute(
+                "SELECT quantity FROM product_inventory WHERE product_id=%s AND size=%s",
+                (item.productId, size),
+            )
+            row = cur.fetchone()
+            if row is None:
+                # Product not tracked in inventory — allow through
+                continue
+            available = row["quantity"]
+            label = item.name + (f" ({item.size})" if item.size else "")
+            if available == 0:
+                raise HTTPException(status_code=400, detail=f"{label} is sold out.")
+            if available < item.quantity:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Only {available} of {label} available.",
+                )
+    finally:
+        db.close()
+
+
+def decrement_inventory_for_order(order_id: str):
+    """Decrement product_inventory after a successful payment."""
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute(
+            "SELECT product_id, quantity, size, is_deal_header FROM order_items WHERE order_id=%s",
+            (order_id,),
+        )
+        items = cur.fetchall()
+
+        for item in items:
+            if item["is_deal_header"]:
+                continue
+            size = item["size"] or ""
+            cur.execute(
+                """
+                UPDATE product_inventory
+                SET quantity = GREATEST(0, quantity - %s)
+                WHERE product_id = %s AND size = %s
+                """,
+                (item["quantity"], item["product_id"], size),
+            )
+
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print("⚠️ decrement_inventory_for_order failed:", e)
+    finally:
+        db.close()
+
+
+# ----------------------------
+# Inventory routes
+# ----------------------------
+
+@app.get("/api/inventory")
+def get_inventory():
+    """Public endpoint — returns all product inventory grouped by productId."""
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute(
+            "SELECT product_id, size, quantity FROM product_inventory ORDER BY product_id, size"
+        )
+        rows = cur.fetchall()
+
+        products: dict = {}
+        for row in rows:
+            pid = row["product_id"]
+            if pid not in products:
+                products[pid] = {"productId": pid, "variants": [], "soldOut": True}
+            qty = row["quantity"]
+            products[pid]["variants"].append({
+                "size": row["size"] if row["size"] else None,
+                "quantity": qty,
+                "soldOut": qty == 0,
+            })
+            if qty > 0:
+                products[pid]["soldOut"] = False
+
+        return {"ok": True, "inventory": list(products.values())}
+    finally:
+        db.close()
+
+
+@app.post("/api/admin/inventory")
+def set_inventory(
+    body: List[InventoryItem],
+    x_admin_token: str | None = Header(default=None),
+):
+    """Admin endpoint — upsert inventory levels."""
+    if not ADMIN_TOKEN or x_admin_token != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    db = get_db()
+    try:
+        cur = db.cursor()
+        for item in body:
+            size = item.size or ""
+            cur.execute(
+                """
+                INSERT INTO product_inventory (product_id, size, quantity)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE quantity = VALUES(quantity)
+                """,
+                (item.productId, size, item.quantity),
+            )
+        db.commit()
+        return {"ok": True, "updated": len(body)}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()

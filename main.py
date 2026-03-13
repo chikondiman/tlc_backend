@@ -7,7 +7,12 @@ import stripe
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Header, Body
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, EmailStr, Field, field_validator
+from starlette.middleware.base import BaseHTTPMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from email_service import send_email, render_order_confirmation_email
 
 load_dotenv()
@@ -20,7 +25,45 @@ stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 if not stripe.api_key:
     raise RuntimeError("Missing STRIPE_SECRET_KEY. Check your .env and that load_dotenv() runs.")
 
+# ---------------------------------------------------------------------------
+# Rate limiter
+# ---------------------------------------------------------------------------
+limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+
 app = FastAPI()
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# ---------------------------------------------------------------------------
+# Security headers middleware
+# ---------------------------------------------------------------------------
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        return response
+
+
+# ---------------------------------------------------------------------------
+# Request body size limit (1 MB)
+# ---------------------------------------------------------------------------
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > 1_000_000:
+            return JSONResponse(status_code=413, content={"detail": "Request body too large."})
+        return await call_next(request)
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestSizeLimitMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,6 +84,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    print(f"❌ Unhandled exception on {request.method} {request.url.path}: {repr(exc)}")
+    return JSONResponse(status_code=500, content={"detail": "An internal error occurred."})
 
 
 @app.get("/health")
@@ -200,22 +249,30 @@ def test_email(x_admin_token: str | None = Header(default=None)):
 # Models
 # ----------------------------
 class Customer(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=200)
     email: EmailStr
-    address: str
+    address: str = Field(min_length=5, max_length=500)
 
 
 class CartItem(BaseModel):
-    id: str
-    productId: str
-    name: str
-    price: float
-    quantity: int
-    category: str
-    image: str
-    size: Optional[str] = None
-    dealId: Optional[str] = None
+    id: str = Field(max_length=100)
+    productId: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=200)
+    price: float = Field(ge=0, le=10_000)
+    quantity: int = Field(ge=1, le=50)
+    category: str = Field(min_length=1, max_length=100)
+    image: str = Field(max_length=500)
+    size: Optional[str] = Field(default=None, max_length=20)
+    dealId: Optional[str] = Field(default=None, max_length=100)
     isDealHeader: Optional[bool] = False
+
+    @field_validator("productId", "name", "category", mode="before")
+    @classmethod
+    def strip_and_no_empty(cls, v: str) -> str:
+        v = str(v).strip()
+        if not v:
+            raise ValueError("Field cannot be empty")
+        return v
 
 
 class CreateOrderPayload(BaseModel):
@@ -511,13 +568,15 @@ def mark_confirmation_email_sent(order_id: str):
 # Routes
 # ----------------------------
 @app.post("/api/orders")
-def create_order_in_db(body: CreateOrderPayload):
+@limiter.limit("10/minute")
+def create_order_in_db(request: Request, body: CreateOrderPayload):
     order_id = create_order_record(body.customer, body.items, body.total)
     return {"ok": True, "orderId": order_id}
 
 
 @app.post("/api/checkout/create")
-def create_checkout(req: CreateCheckoutRequest):
+@limiter.limit("10/minute")
+def create_checkout(request: Request, req: CreateCheckoutRequest):
     if req.total <= 0:
         raise HTTPException(status_code=400, detail="Total must be > 0")
 

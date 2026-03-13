@@ -9,6 +9,3 @@ mysql-connector-python==8.3.0
 pydantic==2.6.4
 email-validator==2.1.1
 sendgrid==6.12.5
-
-# Security: rate limiting
-slowapi==0.1.9

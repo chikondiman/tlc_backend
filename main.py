@@ -1,5 +1,7 @@
 import os
 import uuid
+import time
+from collections import defaultdict
 from typing import Any, Dict, List, Optional
 import json
 import mysql.connector
@@ -10,9 +12,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
 from email_service import send_email, render_order_confirmation_email
 
 load_dotenv()
@@ -26,14 +25,19 @@ if not stripe.api_key:
     raise RuntimeError("Missing STRIPE_SECRET_KEY. Check your .env and that load_dotenv() runs.")
 
 # ---------------------------------------------------------------------------
-# Rate limiter
+# Rate limiter (zero-dependency, in-memory)
 # ---------------------------------------------------------------------------
-limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+_rate_buckets: dict = defaultdict(list)
+
+def is_rate_limited(key: str, limit: int, window: int) -> bool:
+    now = time.time()
+    _rate_buckets[key] = [t for t in _rate_buckets[key] if now - t < window]
+    if len(_rate_buckets[key]) >= limit:
+        return True
+    _rate_buckets[key].append(now)
+    return False
 
 app = FastAPI()
-
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 # ---------------------------------------------------------------------------
@@ -568,15 +572,19 @@ def mark_confirmation_email_sent(order_id: str):
 # Routes
 # ----------------------------
 @app.post("/api/orders")
-@limiter.limit("10/minute")
 def create_order_in_db(request: Request, body: CreateOrderPayload):
+    ip = get_client_ip(request) or "unknown"
+    if is_rate_limited(f"orders:{ip}", limit=10, window=60):
+        raise HTTPException(status_code=429, detail="Too many requests. Please try again later.")
     order_id = create_order_record(body.customer, body.items, body.total)
     return {"ok": True, "orderId": order_id}
 
 
 @app.post("/api/checkout/create")
-@limiter.limit("10/minute")
 def create_checkout(request: Request, req: CreateCheckoutRequest):
+    ip = get_client_ip(request) or "unknown"
+    if is_rate_limited(f"checkout:{ip}", limit=10, window=60):
+        raise HTTPException(status_code=429, detail="Too many requests. Please try again later.")
     if req.total <= 0:
         raise HTTPException(status_code=400, detail="Total must be > 0")
 
